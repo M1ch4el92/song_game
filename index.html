@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Voice Rhythm Game</title>
+<style>
+body { margin:0; overflow:hidden; background:black; color:white; font-family:sans-serif;}
+#score { position:absolute; top:10px; left:10px; font-size:20px;}
+#subtitle { position:absolute; bottom:20px; width:100%; text-align:center; font-size:24px;}
+</style>
+</head>
+<body>
+
+<div id="score">Score: 0</div>
+<div id="subtitle">Нажми, чтобы начать</div>
+<canvas id="game"></canvas>
+<audio id="song" src="song.mp3"></audio>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let audio = document.getElementById("song");
+let score = 0;
+
+let ball = { x: 150, y: canvas.height/2, r: 15 };
+let obstacles = [];
+let notes = [];
+let startTime = 0;
+let analyser, dataArray, audioContext, mic;
+
+async function initMic() {
+    audioContext = new AudioContext();
+    let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mic = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    mic.connect(analyser);
+    dataArray = new Float32Array(analyser.fftSize);
+}
+
+function autoCorrelate(buffer, sampleRate) {
+    let SIZE = buffer.length;
+    let rms = 0;
+    for (let i = 0; i < SIZE; i++) rms += buffer[i] * buffer[i];
+    rms = Math.sqrt(rms / SIZE);
+    if (rms < 0.01) return -1;
+
+    let r1=0, r2=SIZE-1, thres=0.2;
+    for (let i=0;i<SIZE/2;i++) if (Math.abs(buffer[i])<thres){ r1=i; break;}
+    for (let i=1;i<SIZE/2;i++) if (Math.abs(buffer[SIZE-i])<thres){ r2=SIZE-i; break;}
+    buffer = buffer.slice(r1,r2);
+    SIZE = buffer.length;
+
+    let c = new Array(SIZE).fill(0);
+    for (let i=0;i<SIZE;i++)
+        for (let j=0;j<SIZE-i;j++)
+            c[i] += buffer[j]*buffer[j+i];
+
+    let d=0; while(c[d]>c[d+1]) d++;
+    let maxval=-1, maxpos=-1;
+    for (let i=d;i<SIZE;i++){
+        if(c[i]>maxval){ maxval=c[i]; maxpos=i;}
+    }
+    let T0 = maxpos;
+    return sampleRate/T0;
+}
+
+function updatePitch() {
+    analyser.getFloatTimeDomainData(dataArray);
+    let freq = autoCorrelate(dataArray, audioContext.sampleRate);
+    if (freq !== -1) {
+        let min=100, max=1000;
+        let norm = (freq-min)/(max-min);
+        norm = Math.max(0,Math.min(1,norm));
+        ball.y = canvas.height - norm*canvas.height;
+    }
+}
+
+function spawnObstacle(note){
+    obstacles.push({
+        x: canvas.width,
+        targetFreq: note.freq,
+        y: canvas.height - ((note.freq-100)/900)*canvas.height,
+        hit:false
+    });
+}
+
+function updateObstacles(time){
+    notes.forEach(n=>{
+        if(!n.spawned && time>=n.time){
+            spawnObstacle(n);
+            n.spawned=true;
+        }
+    });
+
+    obstacles.forEach(o=>{
+        o.x -= 5;
+        if(Math.abs(o.x-ball.x)<20 && !o.hit){
+            if(Math.abs(o.y-ball.y)<40){
+                score+=10;
+                o.hit=true;
+                document.getElementById("score").innerText="Score: "+score;
+            }
+        }
+    });
+
+    obstacles = obstacles.filter(o=>o.x>-50);
+}
+
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    ctx.fillStyle="white";
+    ctx.beginPath();
+    ctx.arc(ball.x,ball.y,ball.r,0,Math.PI*2);
+    ctx.fill();
+
+    obstacles.forEach(o=>{
+        ctx.fillStyle=o.hit?"green":"red";
+        ctx.fillRect(o.x,o.y-40,20,80);
+    });
+}
+
+function gameLoop(){
+    let time = audio.currentTime;
+    updatePitch();
+    updateObstacles(time);
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+async function startGame(){
+    await initMic();
+    let response = await fetch("song.json");
+    let data = await response.json();
+    notes = data.notes;
+
+    audio.play();
+    gameLoop();
+}
+
+document.body.addEventListener("click", startGame);
+</script>
+</body>
+</html>
